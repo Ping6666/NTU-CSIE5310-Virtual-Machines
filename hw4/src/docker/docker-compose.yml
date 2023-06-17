@@ -1,0 +1,27 @@
+version: "3"
+
+services:
+
+  server:
+    container_name: servervol
+    build: ./server
+    restart: always
+    volumes:
+      - ./server:/servervol
+    ports: 
+      - '5000:5000'
+    networks:
+      - net
+
+  client:
+    container_name: clientvol
+    build: ./client
+    restart: no
+    volumes:
+      - ./client:/clientvol
+    networks:
+      - net
+
+networks:
+  net:
+    driver: bridge

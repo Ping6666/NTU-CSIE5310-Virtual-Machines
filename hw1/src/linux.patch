@@ -1,0 +1,75 @@
+diff --git a/arch/arm64/kvm/arm.c b/arch/arm64/kvm/arm.c
+index fe102cd2e..7dd116a20 100644
+--- a/arch/arm64/kvm/arm.c
++++ b/arch/arm64/kvm/arm.c
+@@ -755,6 +755,48 @@ static bool kvm_vcpu_exit_request(struct kvm_vcpu *vcpu, int *ret)
+ 			xfer_to_guest_mode_work_pending();
+ }
+ 
++/* GPRs modify start */
++
++void print_and_modify_gprs(struct kvm_cpu_context *ctxt)
++{
++	u64 x0_val = ctxt->regs.regs[0];
++	u64 x1_val = ctxt->regs.regs[1];
++	u64 x2_val = ctxt->regs.regs[2];
++	u64 x3_val = ctxt->regs.regs[3];
++	u64 x4_val = ctxt->regs.regs[4];
++	u64 x5_val = ctxt->regs.regs[5];
++	u64 x6_val = ctxt->regs.regs[6];
++	u64 x7_val = ctxt->regs.regs[7];
++	u64 x8_val = ctxt->regs.regs[8];
++	u64 x9_val = ctxt->regs.regs[9];
++
++	// Modify the GPRs
++	u64 x0_move = 0x0000000000000001;
++
++	u64 x0_check = 0x0000000000000000;
++	u64 x1_check = 0x0000000001010101;
++	u64 x2_check = 0x0000000020202020;
++	u64 x3_check = 0x0000000003030303;
++	u64 x4_check = 0x0000000040404040;
++	u64 x5_check = 0x0000000005050505;
++	u64 x6_check = 0x0000000060606060;
++	u64 x7_check = 0x0000000007070707;
++	u64 x8_check = 0x0000000080808080;
++	u64 x9_check = 0x0000000009090909;
++
++	if ((x0_val == x0_check) && (x1_val == x1_check) &&
++	    (x2_val == x2_check) && (x3_val == x3_check) &&
++	    (x4_val == x4_check) && (x5_val == x5_check) &&
++	    (x6_val == x6_check) && (x7_val == x7_check) &&
++	    (x8_val == x8_check) && (x9_val == x9_check)) {
++		ctxt->regs.regs[0] = x0_move;
++
++		printk("Blocker Bye!!!\n");
++	}
++}
++
++/* GPRs modify end */
++
+ /**
+  * kvm_arch_vcpu_ioctl_run - the main VCPU run function to execute guest code
+  * @vcpu:	The VCPU pointer
+@@ -841,6 +883,12 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
+ 
+ 		kvm_arm_setup_debug(vcpu);
+ 
++		/* GPRs modify start */
++
++		print_and_modify_gprs(&vcpu->arch.ctxt);
++
++		/* GPRs modify end */
++
+ 		/**************************************************************
+ 		 * Enter the guest
+ 		 */
+@@ -2111,6 +2159,8 @@ int kvm_arch_init(void *opaque)
+ 		kvm_info("Hyp mode initialized successfully\n");
+ 	}
+ 
++	printk("this is my KVM\n");
++
+ 	return 0;
+ 
+ out_hyp:

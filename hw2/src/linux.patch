@@ -1,0 +1,272 @@
+diff --git a/arch/arm64/include/asm/kvm_host.h b/arch/arm64/include/asm/kvm_host.h
+index f8be56d53..95ec49219 100644
+--- a/arch/arm64/include/asm/kvm_host.h
++++ b/arch/arm64/include/asm/kvm_host.h
+@@ -48,6 +48,12 @@
+ #define KVM_REQ_RELOAD_GICv4	KVM_ARCH_REQ(4)
+ #define KVM_REQ_RELOAD_PMU	KVM_ARCH_REQ(5)
+ 
++/* IOCTL modify start */
++
++#define KVM_REQ_WRITE_GPA	KVM_ARCH_REQ(6)
++
++/* IOCTL modify end */
++
+ #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
+ 				     KVM_DIRTY_LOG_INITIALLY_SET)
+ 
+diff --git a/arch/arm64/include/uapi/asm/kvm.h b/arch/arm64/include/uapi/asm/kvm.h
+index b3edde68b..0cd9d26cc 100644
+--- a/arch/arm64/include/uapi/asm/kvm.h
++++ b/arch/arm64/include/uapi/asm/kvm.h
+@@ -112,6 +112,17 @@ struct kvm_vcpu_init {
+ 	__u32 features[7];
+ };
+ 
++/* IOCTL modify start */
++
++struct kvm_arm_write_gpa_args {
++	__u32 vmid;  // the vmid that you, as the host, want to write to
++	__u64 gpa;  // the gpa of the guest
++	__u64 data;  // address of the payload in host user space
++	__u64 size;  // size of the payload
++};
++
++/* IOCTL modify end */
++
+ struct kvm_sregs {
+ };
+ 
+diff --git a/arch/arm64/kvm/arm.c b/arch/arm64/kvm/arm.c
+index fe102cd2e..1b23e9bb4 100644
+--- a/arch/arm64/kvm/arm.c
++++ b/arch/arm64/kvm/arm.c
+@@ -283,12 +283,150 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
+ 	return r;
+ }
+ 
++/* IOCTL modify start */
++
++struct kvm_arm_write_gpa_args global_args;
++
++static struct kvm *find_kvm_by_vmid(uint32_t vmid)
++{
++	struct kvm *kvm;
++	struct kvm *kvm_found = ERR_PTR(-EINVAL); // vmid not found
++
++	mutex_lock(&kvm_lock);
++	list_for_each_entry (kvm, &vm_list, vm_list) {
++		if (kvm->arch.mmu.vmid.vmid == vmid) {
++			kvm_found = kvm;
++			break;
++		}
++	}
++	mutex_unlock(&kvm_lock);
++
++	return kvm_found;
++}
++
++static int kvm_check_vmid(uint32_t *vmid)
++{
++	int r = 0;
++
++	// Find the corresponding KVM instance by vmid
++	if (IS_ERR_OR_NULL(find_kvm_by_vmid(*vmid)))
++		r = -EINVAL;
++
++	return r;
++}
++
++static void kvm_req_write_gpa(struct kvm_vcpu *vcpu)
++{
++	int r;
++	// Finally, write the data to the guest memory
++	r = kvm_vcpu_write_guest(vcpu, global_args.gpa,
++				 (void *)(global_args.data), global_args.size);
++
++	// Release the resources
++	kfree((void *)(global_args.data));
++
++	if (r != 0) {
++		printk("IOCTL ERROR | kvm_vcpu_write_guest return %d\n", r);
++	} else {
++		printk("IOCTL INFO | kvm_vcpu_write_guest success\n");
++	}
++}
++
++static int kvm_arm_write_gpa(struct kvm_arm_write_gpa_args *args, bool b)
++{
++	int r = 0;
++	struct kvm *kvm;
++	struct kvm_vcpu *vcpu;
++	__u64 *ptr = NULL;
++
++	ptr = (__u64 *)kmalloc(sizeof(__u64) * (args->size), GFP_KERNEL);
++	if (!ptr) {
++		r = -ENOMEM;
++		goto out;
++	}
++
++	if (copy_from_user(ptr, (void __user *)args->data, args->size)) {
++		// Release the resources
++		kfree((void *)(global_args.data));
++
++		r = -EFAULT;
++		goto out;
++	}
++
++	global_args.vmid = args->vmid;
++	global_args.gpa = args->gpa;
++	global_args.data = (__u64)ptr;
++	global_args.size = args->size;
++
++	// Find the corresponding KVM instance by vmid
++	kvm = find_kvm_by_vmid(args->vmid);
++	if (IS_ERR_OR_NULL(kvm)) {
++		// Release the resources
++		kfree((void *)(global_args.data));
++
++		r = -EINVAL;
++		goto out;
++	}
++
++	// Find a ready vcpu to handle the request
++	vcpu = kvm_get_vcpu_by_id(kvm, 0); // kvm->vcpus[i]
++	if (!vcpu) {
++		// Release the resources
++		kfree((void *)(global_args.data));
++
++		r = -EINVAL;
++		goto out;
++	}
++
++	printk("IOCTL INFO | kvm_arm_write_gpa b: %d\n", b);
++	if (b) {
++		// Make a request to the vcpu
++		kvm_make_request(KVM_REQ_WRITE_GPA, vcpu); // check_vcpu_request
++
++		// Optionally, kick the vcpu to make it return to the hypervisor immediately
++		kvm_vcpu_kick(vcpu);
++	} else {
++		kvm_req_write_gpa(vcpu);
++	}
++
++out:
++	return r;
++}
++
+ long kvm_arch_dev_ioctl(struct file *filp,
+ 			unsigned int ioctl, unsigned long arg)
+ {
+-	return -EINVAL;
++	int r;
++
++	switch (ioctl) {
++	case KVM_CHECK_VMID:
++		uint32_t vmid;
++		if (copy_from_user(&vmid, (void __user *)arg, sizeof(vmid))) {
++			r = -EFAULT;
++			goto out;
++		}
++
++		r = kvm_check_vmid(&vmid);
++		break;
++	case KVM_ARM_WRITE_GPA:
++		struct kvm_arm_write_gpa_args args;
++		if (copy_from_user(&args, (void __user *)arg, sizeof(args))) {
++			r = -EFAULT;
++			goto out;
++		}
++
++		// r = kvm_arm_write_gpa(&args, false);
++		r = kvm_arm_write_gpa(&args, true);
++		break;
++	default:
++		r = -EINVAL;
++	}
++out:
++	return r;
+ }
+ 
++/* IOCTL modify end */
++
+ struct kvm *kvm_arch_alloc_vm(void)
+ {
+ 	if (!has_vhe())
+@@ -704,6 +842,14 @@ static void check_vcpu_requests(struct kvm_vcpu *vcpu)
+ 		if (kvm_check_request(KVM_REQ_RELOAD_PMU, vcpu))
+ 			kvm_pmu_handle_pmcr(vcpu,
+ 					    __vcpu_sys_reg(vcpu, PMCR_EL0));
++
++		/* IOCTL modify start */
++
++		if (kvm_check_request(KVM_REQ_WRITE_GPA, vcpu)) {
++			kvm_req_write_gpa(vcpu);
++		}
++
++		/* IOCTL modify end */
+ 	}
+ }
+ 
+diff --git a/include/uapi/linux/kvm.h b/include/uapi/linux/kvm.h
+index a067410eb..43e12c655 100644
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -2007,4 +2007,11 @@ struct kvm_stats_desc {
+ 
+ #define KVM_GET_STATS_FD  _IO(KVMIO,  0xce)
+ 
++/* IOCTL modify start */
++
++#define KVM_ARM_WRITE_GPA	_IOW(KVMIO, 0xdd, struct kvm_arm_write_gpa_args)
++#define KVM_CHECK_VMID		_IO(KVMIO, 0xee)
++
++/* IOCTL modify end */
++
+ #endif /* __LINUX_KVM_H */
+diff --git a/virt/kvm/kvm_main.c b/virt/kvm/kvm_main.c
+index 7851f3a1b..35067e508 100644
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -2859,11 +2859,21 @@ static int __kvm_write_guest_page(struct kvm *kvm,
+ 	unsigned long addr;
+ 
+ 	addr = gfn_to_hva_memslot(memslot, gfn);
++
++	if (addr == KVM_HVA_ERR_BAD)
++		printk("IOCTL ERROR | __kvm_write_guest_page KVM_HVA_ERR_BAD\n");
++	else if (addr == KVM_HVA_ERR_RO_BAD)
++		printk("IOCTL ERROR | __kvm_write_guest_page KVM_HVA_ERR_RO_BAD\n");
++
+ 	if (kvm_is_error_hva(addr))
+ 		return -EFAULT;
++
+ 	r = __copy_to_user((void __user *)addr + offset, data, len);
+-	if (r)
++	if (r) {
++		printk("IOCTL ERROR | __copy_to_user return %d\n", r);
+ 		return -EFAULT;
++	}
++
+ 	mark_page_dirty_in_slot(kvm, memslot, gfn);
+ 	return 0;
+ }
+@@ -2880,8 +2890,18 @@ EXPORT_SYMBOL_GPL(kvm_write_guest_page);
+ int kvm_vcpu_write_guest_page(struct kvm_vcpu *vcpu, gfn_t gfn,
+ 			      const void *data, int offset, int len)
+ {
++    pid_t pid;
++    unsigned long ttbr0_el1, ttbr1_el1;
+ 	struct kvm_memory_slot *slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
+ 
++    pid = current->pid;
++    asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0_el1));
++    asm volatile("mrs %0, ttbr1_el1" : "=r"(ttbr1_el1));
++
++    printk("IOCTL INFO | pid: %d\n", pid);
++    printk("IOCTL INFO | ttbr0_el1: %016lx\n", ttbr0_el1);
++    printk("IOCTL INFO | ttbr1_el1: %016lx\n", ttbr1_el1);
++
+ 	return __kvm_write_guest_page(vcpu->kvm, slot, gfn, data, offset, len);
+ }
+ EXPORT_SYMBOL_GPL(kvm_vcpu_write_guest_page);
